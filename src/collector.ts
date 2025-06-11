@@ -190,33 +190,68 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
         }
 
         // Function to navigate to a page with a timeout guard
-        const navigateWithTimeout = async (page: Page, url: string, timeout: number, waitUntil: PuppeteerLifeCycleEvent) => {
-            try {
-                page_response = await Promise.race([
-                    page.goto(url, {
-                        timeout: timeout,
-                        waitUntil: waitUntil
-                    }),
-                    new Promise((_, reject) =>
-                        setTimeout(() => {
-                            console.log('First navigation attempt timeout');
-                            reject(new Error('First navigation attempt timeout'));
-                        }, 10000)
-                    )
-                ]);
-            } catch (error) {
-                console.log('First attempt failed, trying with domcontentloaded');
-                page_response = await page.goto(url, {
-                    timeout: timeout,
-                    waitUntil: 'domcontentloaded' as PuppeteerLifeCycleEvent
-                });
+        const navigateWithTimeout = async (page: Page, url: string, timeout: number, waitUntil: PuppeteerLifeCycleEvent, maxRetries: number = 3) => {
+            let lastResponse = null;
+            
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                try {
+                    page_response = await Promise.race([
+                        page.goto(url, {
+                            timeout: timeout,
+                            waitUntil: waitUntil
+                        }),
+                        new Promise((_, reject) =>
+                            setTimeout(() => {
+                                console.log(`Navigation attempt ${attempt} timeout`);
+                                reject(new Error(`Navigation attempt ${attempt} timeout`));
+                            }, 10000)
+                        )
+                    ]);
+                } catch (error) {
+                    console.log(`Attempt ${attempt} failed, trying with domcontentloaded`);
+                    try {
+                        page_response = await page.goto(url, {
+                            timeout: timeout,
+                            waitUntil: 'domcontentloaded' as PuppeteerLifeCycleEvent
+                        });
+                    } catch (fallbackError) {
+                        console.log(`Attempt ${attempt} failed completely: ${fallbackError.message}`);
+                        if (attempt === maxRetries) {
+                            return false;
+                        }
+                        continue;
+                    }
+                }
+                
+                lastResponse = page_response;
+                
+                // Check if the response status is 2xx (OK)
+                if (page_response && page_response.status() >= 200 && page_response.status() < 300) {
+                    await savePageContent(pageIndex, args.outDir, page, args.saveScreenshots);
+                    return true;
+                } else {
+                    console.log(`Attempt ${attempt} - HTTP status: ${page_response?.status()} for ${url}`);
+                    if (attempt < maxRetries) {
+                        console.log(`Retrying navigation to ${url} (attempt ${attempt + 1}/${maxRetries})`);
+                        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second before retry
+                    }
+                }
             }
-            await savePageContent(pageIndex, args.outDir, page, args.saveScreenshots);
+            
+            console.log(`Skipping page ${url} after ${maxRetries} attempts - final HTTP status: ${lastResponse?.status()}`);
+            return false;
         };
 
         // Go to the first url
         console.log('Going to the first url', inUrl);
-        await navigateWithTimeout(page, inUrl, args.defaultTimeout, args.defaultWaitUntil as PuppeteerLifeCycleEvent);
+        const firstPageSuccess = await navigateWithTimeout(page, inUrl, args.defaultTimeout, args.defaultWaitUntil as PuppeteerLifeCycleEvent);
+        
+        if (!firstPageSuccess) {
+            return {
+                status: 'failed',
+                page_response: `Initial page returned non-2xx status: ${page_response?.status()}`
+            };
+        }
         
         // Save landing page title
         const title = await page.title();
@@ -283,16 +318,18 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
             }
             console.log(`Browsing now to ${link}`);
             
-            await navigateWithTimeout(page, link, args.defaultTimeout, args.defaultWaitUntil as PuppeteerLifeCycleEvent);
+            const linkSuccess = await navigateWithTimeout(page, link, args.defaultTimeout, args.defaultWaitUntil as PuppeteerLifeCycleEvent);
 
-            await fillForms(page);
+            if (linkSuccess) {
+                await fillForms(page);
 
-            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for 1 second
+                await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for 1 second
 
-            duplicatedLinks = duplicatedLinks.concat(await getLinks(page));
-            await autoScroll(page);
+                duplicatedLinks = duplicatedLinks.concat(await getLinks(page));
+                await autoScroll(page);
 
-            pageIndex++;
+                pageIndex++;
+            }
         }
 
         await captureBrowserCookies(page, args.outDir);
