@@ -303,10 +303,13 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
         }
         const browse_links = sampleSize(subDomainLinks, args.numPages);
         output.browsing_history = [output.uri_dest].concat(browse_links.map(l => l.href));
-        console.log('About to browse more links');
+        console.log(`About to browse ${browse_links?.length} more links`);
 
-        for (const link of output.browsing_history.slice(1)) {
-            logger.log('info', `browsing now to ${link}`, { type: 'Browser' });
+        let successUrls = 0;
+        let failedUrls = 0;
+
+        for (const [idx, link] of output.browsing_history.slice(1).entries()) {
+            logger.log('info', `[#${idx + 2}] browsing now to ${link}`, { type: 'Browser' });
             if (didBrowserDisconnect) {
                 return {
                     status: 'failed',
@@ -316,7 +319,7 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
             if (args.clearCache) {
                 await clearCookiesCache(page);
             }
-            console.log(`Browsing now to ${link}`);
+            console.log(`[#${idx + 2}] Browsing now to ${link}`);
             
             const linkSuccess = await navigateWithTimeout(page, link, args.defaultTimeout, args.defaultWaitUntil as PuppeteerLifeCycleEvent);
 
@@ -329,8 +332,13 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
                 await autoScroll(page);
 
                 pageIndex++;
+                successUrls++;
+            } else {
+                failedUrls++;
             }
         }
+
+        console.log(`Finished browsing website. ${successUrls} pages browsed successfully, ${failedUrls} failed.`);
 
         await captureBrowserCookies(page, args.outDir);
         if (args.captureHar) {
