@@ -76,7 +76,7 @@
     "typescript": "^4.9.5"
   },
   "overrides": {
-    "chrome-har": "^0.14.0"
+    "chrome-har": "^1.0.1"
   },
   "config": {
     "commitizen": {
