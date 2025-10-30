@@ -21,16 +21,18 @@ const hashesMap = {
 
 export const setupKeyLoggingInspector = async (page: Page, eventDataHandler: (event: BlacklightEvent) => void) => {
     page.on('request', (request: HTTPRequest) => {
+        const frameUrl = request.frame()?.url() || request.url() || '';
         const stack = [
             {
-                fileName: request.frame() ? request.frame().url() : '',
+                fileName: frameUrl,
                 source: `RequestHandler`
             }
         ];
         if (request.method() === 'POST') {
             try {
                 let filter = [];
-                filter = ts.filter((t: string) => request.postData().indexOf(t) > -1);
+                const postData = request.postData?.() || '';
+                filter = ts.filter((t: string) => postData.indexOf(t) > -1);
                 if (filter.length > 0) {
                     let match_type = [];
                     filter.forEach(val => {
@@ -49,7 +51,7 @@ export const setupKeyLoggingInspector = async (page: Page, eventDataHandler: (ev
                         },
                         stack,
                         type: `KeyLogging`,
-                        url: request.frame().url()
+                        url: frameUrl
                     });
                 }
             } catch (error) {
@@ -59,7 +61,7 @@ export const setupKeyLoggingInspector = async (page: Page, eventDataHandler: (ev
                     },
                     stack,
                     type: `Error.KeyLogging`,
-                    url: request.frame().url()
+                    url: frameUrl
                 });
             }
         }
