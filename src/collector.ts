@@ -276,6 +276,29 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
         output.uri_dest = page.url();
         duplicatedLinks = await getLinks(page);
         REDIRECTED_FIRST_PARTY = parse(output.uri_dest);
+
+        output.uri_dest = page.url();
+        duplicatedLinks = await getLinks(page);
+        
+        // Don't update REDIRECTED_FIRST_PARTY if the redirect is to a completely different domain
+        const redirectedDomain = parse(output.uri_dest);
+        
+        // Check if it's the same root domain (allows subdomain variations)
+        const isSameDomain = FIRST_PARTY.domain === redirectedDomain.domain;
+        
+        console.log("Checking domain redirection:");
+        console.log(`Original domain: ${FIRST_PARTY.domain}`);
+        console.log(`Redirected domain: ${redirectedDomain.domain}`);
+        console.log(`Is same domain: ${isSameDomain}`);
+        
+        if (!isSameDomain) {
+            console.log(`Warning: Site redirected to different domain (${output.uri_dest}). Treating original domain (${inUrl}) as first party.`);
+            REDIRECTED_FIRST_PARTY = FIRST_PARTY;
+        } else {
+            // It's the same domain (possibly different subdomain), so update
+            REDIRECTED_FIRST_PARTY = redirectedDomain;
+        }
+
         for (const link of dedupLinks(duplicatedLinks)) {
             const l = parse(link.href);
 
