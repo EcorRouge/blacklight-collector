@@ -275,10 +275,6 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
 
         output.uri_dest = page.url();
         duplicatedLinks = await getLinks(page);
-        REDIRECTED_FIRST_PARTY = parse(output.uri_dest);
-
-        output.uri_dest = page.url();
-        duplicatedLinks = await getLinks(page);
         
         // Don't update REDIRECTED_FIRST_PARTY if the redirect is to a completely different domain
         const redirectedDomain = parse(output.uri_dest);
