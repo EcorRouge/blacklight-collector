@@ -225,13 +225,14 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
                 }
                 
                 lastResponse = page_response;
+                const status = page_response?.status();
                 
-                // Check if the response status is 2xx (OK)
-                if (page_response && page_response.status() >= 200 && page_response.status() < 300) {
+                // Check if the response status is 2xx (OK) or 304 (Not Modified)
+                if (page_response && ((status >= 200 && status < 300) || status === 304)) {
                     await savePageContent(pageIndex, args.outDir, page, args.saveScreenshots);
                     return true;
                 } else {
-                    console.log(`Attempt ${attempt} - HTTP status: ${page_response?.status()} for ${url}`);
+                    console.log(`Attempt ${attempt} - HTTP status: ${status} for ${url}`);
                     if (attempt < maxRetries) {
                         console.log(`Retrying navigation to ${url} (attempt ${attempt + 1}/${maxRetries})`);
                         await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second before retry
