@@ -7,6 +7,29 @@ import { Global } from "../src/types";
 import { setUpThirdPartyTrackersInspector } from "../src/inspectors/third-party-trackers";
 import { setupBlacklightInspector } from "../src/inspectors/inspector";
 declare var global: Global;
+
+const TYPE_PATTERNS: Record<string, string[]> = {
+  cookies: ["JsInstrument", "Cookie.HTTP"],
+  key_logging: ["KeyLogging"],
+  behaviour_event_listeners: ["JsInstrument"],
+  canvas_fingerprinters: ["JsInstrument"],
+  canvas_font_fingerprinters: ["JsInstrument"],
+  fingerprintable_api_calls: ["JsInstrument"],
+  session_recorders: ["SessionRecording"],
+  third_party_trackers: ["TrackingRequest"],
+  fb_pixel_events: ["TrackingRequest"],
+};
+
+const unwrapMessages = (rows: any[], reportType?: string) => {
+  const patterns = reportType ? TYPE_PATTERNS[reportType] : null;
+  return rows
+    .filter((r) => {
+      if (!r.message?.type || r.message.type.includes("Error")) return false;
+      if (!patterns) return true;
+      return patterns.some((p) => r.message.type.includes(p));
+    })
+    .map((r) => r.message);
+};
 it("can parse AddEventlistener events", async () => {
   const browser = await puppeteer.launch(defaultPuppeteerBrowserOptions);
   const page = (await browser.pages())[0];
@@ -14,7 +37,7 @@ it("can parse AddEventlistener events", async () => {
   const EVENTS_URL = `${global.__DEV_SERVER__}/session_recorder.html`;
   await setupBlacklightInspector(page, (e) => rows.push({ message: e }));
   await page.goto(EVENTS_URL, { waitUntil: "networkidle0" });
-  const report = generateReport("behaviour_event_listeners", rows, null, null);
+  const report = generateReport("behaviour_event_listeners", unwrapMessages(rows, "behaviour_event_listeners"), null, null);
   await browser.close();
   expect(report["KEYBOARD"]).toEqual({
     "http://localhost:8125/shared/event-listener.js": ["keyup"],
@@ -49,13 +72,13 @@ it("can parse AddEventlistener events", async () => {
 it("can parse session recording events", async () => {
   const TEST_DIR = join(__dirname, "test-data", "veteransunitedsession");
   const rawEvents = loadEventData(TEST_DIR);
-  const report = generateReport("session_recorders", rawEvents, null, null);
+  const report = generateReport("session_recorders", unwrapMessages(rawEvents, "session_recorders"), null, null);
   expect(Object.keys(report)).toEqual(["leadid.com", "fullstory.com/s/fs.js"]);
 });
 it("can parse key logging events", async () => {
   const TEST_DIR = join(__dirname, "test-data", "veteransunited");
   const rawEvents = loadEventData(TEST_DIR);
-  const report = generateReport("key_logging", rawEvents, null, null);
+  const report = generateReport("key_logging", unwrapMessages(rawEvents, "key_logging"), null, null);
   expect(Object.keys(report)).toEqual(["leadid.com", "fullstory.com"]);
 });
 
@@ -100,7 +123,7 @@ it("can group fingerprintable window objects", async () => {
   await page.goto(PROPERTIES_URL, { waitUntil: "networkidle0" });
   const output = await generateReport(
     "fingerprintable_api_calls",
-    rows,
+    unwrapMessages(rows, "fingerprintable_api_calls"),
     null,
     null
   );
@@ -113,7 +136,7 @@ it("can group fingerprintable window objects", async () => {
 it("can parse FB Pixel tracking events", async () => {
   const TEST_DIR = join(__dirname, "test-data", "veteransunited-1.0.3");
   const rawEvents = loadEventData(TEST_DIR);
-  const report = generateReport("fb_pixel_events", rawEvents, null, null);
+  const report = generateReport("fb_pixel_events", unwrapMessages(rawEvents, "fb_pixel_events"), null, null);
   const pageUrls = [
     "https://www.veteransunited.com/",
     "https://www.veteransunited.com/copyright/",
@@ -138,6 +161,6 @@ it.skip("can parse FB Pixel tracking events - live capture", async () => {
   );
   await page.goto(url, { waitUntil: "networkidle2" });
   await browser.close();
-  const report = generateReport("fb_pixel_events", rows, null, null);
+  const report = generateReport("fb_pixel_events", unwrapMessages(rows, "fb_pixel_events"), null, null);
   expect(report.map((r) => r.eventName)).toContain("PageView");
 });

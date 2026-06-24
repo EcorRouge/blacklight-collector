@@ -21,8 +21,7 @@ import {
     hasOwnProperty, 
 } from './helpers/utils';
 
-export const generateReport = (reportType, messages, dataDir, url) => {
-    const eventData = getEventData(reportType, messages);
+export const generateReport = (reportType: string, eventData: BlacklightEvent[], dataDir: string, url: string) => {
     switch (reportType) {
         case 'cookies':
             return reportCookieEvents(eventData, dataDir, url);
@@ -45,47 +44,6 @@ export const generateReport = (reportType, messages, dataDir, url) => {
         default:
             return {};
     }
-};
-
-const filterByEvent = (messages, typePattern) => {
-    return messages.filter(m => m.message.type.includes(typePattern) && !m.message.type.includes('Error'));
-};
-
-const getEventData = (reportType, messages): BlacklightEvent[] => {
-    let filtered = [];
-    switch (reportType) {
-        case 'cookies':
-            filtered = filterByEvent(messages, 'JsInstrument');
-            filtered = filtered.concat(filterByEvent(messages, 'Cookie.HTTP'));
-            break;
-        case 'key_logging':
-            filtered = filterByEvent(messages, 'KeyLogging');
-            break;
-        case 'behaviour_event_listeners':
-            filtered = filterByEvent(messages, 'JsInstrument');
-            break;
-        case 'canvas_fingerprinters':
-            filtered = filterByEvent(messages, 'JsInstrument');
-            break;
-        case 'canvas_font_fingerprinters':
-            filtered = filterByEvent(messages, 'JsInstrument');
-            break;
-        case 'fingerprintable_api_calls':
-            filtered = filterByEvent(messages, 'JsInstrument');
-            break;
-        case 'session_recorders':
-            filtered = filterByEvent(messages, 'SessionRecording');
-            break;
-        case 'third_party_trackers':
-            filtered = filterByEvent(messages, 'TrackingRequest');
-            break;
-        case 'fb_pixel_events':
-            filtered = filterByEvent(messages, 'TrackingRequest');
-            break;
-        default:
-            return [];
-    }
-    return filtered.map(m => m.message);
 };
 
 const reportSessionRecorders = (eventData: BlacklightEvent[]) => {
