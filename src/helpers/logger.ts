@@ -25,9 +25,17 @@ export const getLogger = ({ outDir = '', quiet = false }) => {
         })
     );
 
-    return createLogger({
+    const logger = createLogger({
         // https://stackoverflow.com/a/48573091/1407622
         format: format.combine(format.timestamp(), format.json()),
         transports: log_transports
     });
+
+    return { logger, logFilePath: filename };
+};
+
+
+export const logHeap = (label: string) => {
+    const heap = process.memoryUsage();
+    console.log(`[${label}] heapUsed=${Math.round(heap.heapUsed / 1024 / 1024)}MB | heapTotal=${Math.round(heap.heapTotal / 1024 / 1024)}MB`);
 };

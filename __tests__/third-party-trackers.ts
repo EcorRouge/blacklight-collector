@@ -4,6 +4,11 @@ import { setUpThirdPartyTrackersInspector } from "../src/inspectors/third-party-
 import { generateReport } from "../src/parser";
 import { getDomain } from "tldts";
 
+const unwrapMessages = (rows: any[]) =>
+  rows
+    .filter((r) => r.message?.type?.includes("TrackingRequest") && !r.message.type.includes("Error"))
+    .map((r) => r.message);
+
 jest.setTimeout(50000);
 it("captures requests that match the easyprivacy list ", async () => {
   const browser = await puppeteer.launch(defaultPuppeteerBrowserOptions);
@@ -16,7 +21,7 @@ it("captures requests that match the easyprivacy list ", async () => {
   await browser.close();
   const output = await generateReport(
     "third_party_trackers",
-    rows,
+    unwrapMessages(rows),
     null,
     "jetblue.com"
   );
@@ -40,7 +45,7 @@ it("considers the first party domain to be the domain set after any redirects ",
   await browser.close();
   const output = await generateReport(
     "third_party_trackers",
-    rows,
+    unwrapMessages(rows),
     null,
     "nytimes.com"
   );
@@ -64,7 +69,7 @@ it("does not include any analytics that might be hosted by the first party ", as
   await browser.close();
   const output = await generateReport(
     "third_party_trackers",
-    rows,
+    unwrapMessages(rows),
     null,
     "eff.org"
   );

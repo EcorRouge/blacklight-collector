@@ -7,7 +7,8 @@ import PuppeteerHar from 'puppeteer-har';
 import { getDomain, getSubdomain, parse } from 'tldts';
 import { captureBrowserCookies, clearCookiesCache, setupHttpCookieCapture } from './inspectors/cookies';
 
-import { getLogger } from './helpers/logger';
+import { getLogger, logHeap } from './helpers/logger';
+import { streamEventsByType } from './helpers/stream-events';
 import { generateReport } from './parser';
 import { defaultPuppeteerBrowserOptions, savePageContent } from './pptr-utils/default';
 import { dedupLinks, getLinks, getSocialLinks } from './pptr-utils/get-links';
@@ -56,7 +57,7 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
     clearDir(args.outDir);
     const FIRST_PARTY = parse(inUrl);
     let REDIRECTED_FIRST_PARTY = parse(inUrl);
-    const logger = getLogger({ outDir: args.outDir, quiet: args.quiet });
+    const { logger, logFilePath } = getLogger({ outDir: args.outDir, quiet: args.quiet });
 
     const output: any = {
         title: args.title,
@@ -401,48 +402,34 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
             output.social = getSocialLinks(links);
         }
 
-        const event_data_all = await new Promise(done => {
-            logger.query(
-                {
-                    start: 0,
-                    order: 'desc',
-                    limit: Infinity,
-                    fields: ['message']
-                },
-                (err, results) => {
-                    if (err) {
-                        console.log(`Couldnt load event data ${JSON.stringify(err)}`);
-                        return done([]);
-                    }
 
-                    return done(results.file);
-                }
-            );
+        await new Promise<void>((resolve) => {
+            logger.on('finish', resolve);
+            logger.end();
         });
 
-        if (!Array.isArray(event_data_all)) {
-            return {
-                status: 'failed',
-                page_response: 'Couldnt load event data'
-            };
-        }
-        if (event_data_all.length < 1) {
+        console.log("Streaming events by type from log file:", logFilePath);
+        logHeap("Before streaming events by type");
+        const eventsByType = await streamEventsByType(logFilePath, args.blTests);
+        logHeap("After streaming events by type");
+        console.log("Finished streaming events by type.")
+
+        const hasAnyEvents = Object.values(eventsByType).some(arr => arr.length > 0);
+        if (!hasAnyEvents) {
             return {
                 status: 'failed',
                 page_response: 'Couldnt load event data'
             };
         }
 
-        // filter only events with type set
-        const event_data = event_data_all.filter(event => {
-            return !!event.message.type;
-        });
         // We only consider something to be a third party tracker if:
         // The domain is different to that of the final url (after any redirection) of the page the user requested to load.
+        logHeap("Before generating reports");
         const reports = args.blTests.reduce((acc, cur) => {
-            acc[cur] = generateReport(cur, event_data, args.outDir, REDIRECTED_FIRST_PARTY.domain);
+            acc[cur] = generateReport(cur, eventsByType[cur] || [], args.outDir, REDIRECTED_FIRST_PARTY.domain);
             return acc;
         }, {});
+        logHeap("After generating reports");
 
         const json_dump = JSON.stringify({ ...output, reports }, null, 2);
         writeFileSync(join(args.outDir, 'inspection.json'), json_dump);

@@ -6,6 +6,11 @@ import { jsInstruments } from '../plugins/js-instrument';
 import { injectPlugins } from '../pptr-utils/eval-scripts';
 import { BlacklightEvent } from '../types';
 
+const SKIP_VALUE_SYMBOLS = [
+    'window.localStorage',
+    'window.sessionStorage'
+];
+
 function getPageScriptAsString(observers, testing = false) {
     let observersString = '';
     let observersNameString = '';
@@ -30,6 +35,12 @@ export const setupBlacklightInspector = async (
     await page.exposeFunction('reportEvent', eventData => {
         try {
             const parsed = JSON.parse(eventData);
+
+            // Drop value for symbols where it's not needed for reports
+            if (parsed?.data?.symbol && SKIP_VALUE_SYMBOLS.includes(parsed.data.symbol)) {
+                parsed.data.value = '[SKIPPED]';
+            }
+
             eventDataHandler(parsed);
         } catch (error) {
             eventDataHandler({
