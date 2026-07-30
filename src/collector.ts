@@ -118,6 +118,7 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
 
     const options = {
         ...defaultPuppeteerBrowserOptions,
+        ...args.extraPuppeteerOptions,
         args: [...defaultPuppeteerBrowserOptions.args, ...args.extraChromiumArgs],
         headless: args.headless,
         userDataDir
