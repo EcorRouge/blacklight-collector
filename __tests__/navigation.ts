@@ -194,6 +194,6 @@ describe('collect with a scan deadline', () => {
             scanTimeoutMs: 1
         });
 
-        expect(result).toEqual({ status: 'failed', page_response: 'Scan time budget exhausted' });
+        expect(result).toEqual({ status: 'failed', page_response: 'Scan time budget exhausted', pages_succeeded: [], pages_failed: [] });
     });
 });

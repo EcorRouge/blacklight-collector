@@ -344,6 +344,6 @@ describe('openEntryPage', () => {
     it('records nothing when the deadline has already passed', async () => {
         const result = await openEntryPage(urlPage({}), ['https://x.example/'], navOptions(new ScanDeadline(0)));
 
-        expect(result).toEqual({ response: null, attempts: [], deadlineReached: true });
+        expect(result).toEqual({ response: null, attempts: [], deadlineReached: true, httpErrors: [] });
     });
 });

@@ -5,6 +5,8 @@ import { ResolutionFailureKind } from './entry-candidates';
 /** The parts of a fetch Response the resolver reads. */
 export interface ResponseLike {
     status: number;
+    /** Final URL after redirects, when the client followed them. */
+    url?: string;
     headers: { get(name: string): string | null };
     body: ReadableStream<Uint8Array> | null;
 }
@@ -12,7 +14,7 @@ export interface ResponseLike {
 export interface FetchInit {
     method: 'HEAD' | 'GET';
     headers: Record<string, string>;
-    redirect: 'manual';
+    redirect: 'manual' | 'follow';
     signal: AbortSignal;
     dispatcher?: object;
 }
@@ -60,12 +62,12 @@ export const classifyError = (error: unknown, timedOut: boolean): RequestFailure
     return new RequestFailure('other', message);
 };
 
-export const readHead = async (body: ReadableStream<Uint8Array>): Promise<string> => {
+export const readHead = async (body: ReadableStream<Uint8Array>, limit = DOCUMENT_SNIFF_BYTES): Promise<string> => {
     const reader = body.getReader();
     const chunks: Uint8Array[] = [];
     let size = 0;
     try {
-        while (size < DOCUMENT_SNIFF_BYTES) {
+        while (size < limit) {
             const { done, value } = await reader.read();
             if (done) {
                 break;
@@ -74,10 +76,10 @@ export const readHead = async (body: ReadableStream<Uint8Array>): Promise<string
             size += value.length;
         }
     } finally {
-        // Only the start of the document matters; do not download the rest.
+        // Only the start of the body matters; do not download the rest.
         await reader.cancel();
     }
-    return Buffer.concat(chunks).toString('utf8').slice(0, DOCUMENT_SNIFF_BYTES);
+    return Buffer.concat(chunks).toString('utf8').slice(0, limit);
 };
 
 export const isHtml = (response: ResponseLike): boolean => {
