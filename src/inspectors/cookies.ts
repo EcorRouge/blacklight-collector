@@ -1,17 +1,17 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import flatten from 'lodash.flatten';
 import { join } from 'path';
-import { Page } from 'puppeteer';
+import { HTTPResponse, Page } from 'puppeteer';
 import { getDomain, getHostname } from 'tldts';
-import { Cookie } from 'tough-cookie';
+import { Cookie, defaultPath } from 'tough-cookie';
 import { getScriptUrl, hasOwnProperty } from '../helpers/utils';
 
-const parseCookie = (cookieStr:string, url:string) => {
+const parseCookie = (cookieStr: string, url: string) => {
     const cookie = Cookie.parse(cookieStr);
     try {
         if (typeof cookie !== 'undefined') {
-            if (!!cookie.domain) {
-                // what is the domain if not set explicitly?
+            if (!cookie.domain) {
+                // A cookie without a Domain attribute belongs to the host that set it.
                 // https://stackoverflow.com/a/5258477/1407622
                 cookie.domain = getHostname(url);
             }
@@ -24,37 +24,72 @@ const parseCookie = (cookieStr:string, url:string) => {
     }
 };
 
-export const setupHttpCookieCapture = async (page, eventHandler) => {
-    await page.on('response', response => {
-        try {
-            const req = response.request();
-            if (!response._headers) return;
-            const cookieHTTP = response._headers['set-cookie'];
-            if (cookieHTTP) {
-                const stack = [
-                    {
-                        fileName: req.url(),
-                        source: `set in Set-Cookie HTTP response header for ${req.url()}`
-                    }
-                ];
-                const splitCookieHeaders = cookieHTTP.split('\n');
-                const data = splitCookieHeaders.map(c => parseCookie(c, req.url()));
-                // find main frame
-                let frame = response.frame();
-                while (frame.parentFrame()) {
-                    frame = frame.parentFrame();
-                }
+/**
+ * Without a Path attribute the browser scopes the cookie to the directory of the setting URL
+ * (RFC 6265 5.1.4). Left unset, the third-party check glues the missing path onto the domain
+ * ("cnn.comundefined") and calls every such cookie third party.
+ */
+const parseHeaderCookie = (cookieStr: string, url: string) => {
+    const cookie = parseCookie(cookieStr, url);
+    if (cookie && !cookie.path) {
+        cookie.path = defaultPath(new URL(url).pathname);
+    }
+    return cookie;
+};
 
-                eventHandler({
-                    data,
-                    raw: cookieHTTP,
-                    stack,
-                    type: 'Cookie.HTTP',
-                    url: frame.url() // or page.url(), // (can be about:blank if the request is issued by browser.goto)
-                });
+/**
+ * The page the cookie was set on. While a document response is arriving its frame still shows the
+ * previous URL (about:blank on the first visit), so a top-level navigation is the page itself.
+ * Requests issued by the browser or a service worker have no frame.
+ */
+const visitedPageUrl = (page: Page, response: HTTPResponse) => {
+    const request = response.request();
+    const frame = request.frame();
+    if (frame === null) {
+        return page.url();
+    }
+    if (request.isNavigationRequest() && frame === page.mainFrame()) {
+        return response.url();
+    }
+    let top = frame;
+    while (top.parentFrame()) {
+        top = top.parentFrame();
+    }
+    return top.url();
+};
+
+/**
+ * Puppeteer 22 builds `headers()` from the raw CDP ExtraInfo headers whenever Chrome sends them, so
+ * Set-Cookie is present for first- and third-party responses, redirects included, even when Chrome
+ * then refuses to store the cookie. Repeated Set-Cookie headers arrive joined with '\n'.
+ */
+export const setupHttpCookieCapture = async (page: Page, eventHandler: (event: unknown) => void) => {
+    page.on('response', (response: HTTPResponse) => {
+        const requestUrl = response.url();
+        try {
+            const cookieHTTP = response.headers()['set-cookie'];
+            if (!cookieHTTP) {
+                return;
             }
+            const stack = [
+                {
+                    fileName: requestUrl,
+                    source: `set in Set-Cookie HTTP response header for ${requestUrl}`
+                }
+            ];
+            const data = cookieHTTP
+                .split('\n')
+                .filter(c => c.trim())
+                .map(c => parseHeaderCookie(c, requestUrl));
+            eventHandler({
+                data,
+                raw: cookieHTTP,
+                stack,
+                type: 'Cookie.HTTP',
+                url: visitedPageUrl(page, response)
+            });
         } catch (error) {
-            console.log(error);
+            console.log(`Could not record the Set-Cookie header of ${requestUrl}: ${error.message}`);
         }
     });
 };

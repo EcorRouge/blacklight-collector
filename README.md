@@ -159,6 +159,9 @@ A scan with no page loaded fails, whatever events were recorded:
   - JSON file containing a list of all the cookies set on that website.
 - **inspection-log.ndjson**
   - This file contains all the raw events that are recorded during the inspection which are used for analysis.
+  - Every response with `Set-Cookie` headers is recorded as a `Cookie.HTTP` event, including third-party
+    responses whose cookies the browser refused to store. The `cookies` report uses these events to label
+    each cookie `http`, `js`, `both` or `unknown` by how it was set.
 - **inspection.json**:
   - Final inspection report that includes the following keys:
     - `browser`: Details of the browser version used.
