@@ -85,7 +85,7 @@ Results are stored in `demo-dir` by default
   - cap for one navigation attempt. If loading with `defaultWaitUntil` times out, the pending load is stopped and the page is tried once more with `domcontentloaded`; the two loads never run at the same time
 - `scanTimeoutMs`
   - default: 480000
-  - total wall-clock budget for the whole crawl, including retries. Once it is spent no further pages are visited; the pages already collected are still reported as a normal `success` result with `scan_deadline_reached: true`. If it runs out before the first page loads, `collect` returns `{ status: 'failed', page_response: 'Scan time budget exhausted' }`
+  - total wall-clock budget for the whole crawl, including retries. Once it is spent no further pages are visited; the pages already collected are still reported as a `success` result with `scan_deadline_reached: true` and `partial: true`. If it runs out before any page loads, `collect` returns `{ status: 'failed', page_response: 'Scan time budget exhausted', pages_succeeded: [], pages_failed: [...] }`
 - `maxRetries`
   - default: 3
   - attempts per page for network errors and timeouts (never past `scanTimeoutMs`). HTTP errors follow a fixed policy: 400, 401, 404, 405, 410 and 451 are not retried; 403, 429, 5xx and other non-success statuses are retried once after 1 s. 2xx and 304 are success
@@ -98,7 +98,7 @@ Results are stored in `demo-dir` by default
 - `extraChromiumArgs`
   - default: ['--disable-features=TrackingProtection3pcd']
   - Extra flags to pass to Chromium executable
-  - A `--proxy-server=http(s)://[user:pass@]host:port` flag is also used for the entry URL pre-resolution (below) when the `undici` package is installed; otherwise pre-resolution runs without the proxy and logs that it did. The proxy URL is never logged.
+  - A `--proxy-server=http(s)://[user:pass@]host:port` flag is also used for the entry URL pre-resolution and the fallback page discovery requests (below) when the `undici` package is installed; otherwise those requests run without the proxy and log that they did. The proxy URL is never logged, and proxy credentials are replaced with `***` wherever the configuration is echoed back (`config.extraChromiumArgs`, `config.extraPuppeteerOptions`).
 - `location`
   - default: nonexistant
   - Optional description of location of scan execution
@@ -121,6 +121,35 @@ The first candidate gets the usual `maxRetries`; fallbacks get one attempt each,
 
 When the site ends up on a different registrable domain, both the requested and the final domain are treated as first party
 (request hosts, links and every report).
+
+## Fallback page discovery
+
+When every entry candidate answered with an HTTP error (for example a 403 bot wall or a 404 on an
+empty root), the collector looks for another page of the same site to start from. It is skipped when
+the candidates failed without any HTTP answer (unresolvable host, connection errors) or the scan
+deadline has passed. Sources, in order, each queried only if the previous ones produced no page:
+
+1. links in the body of the error pages (the browser's copy, or a fresh request when the browser no longer has it)
+2. sitemaps: the `Sitemap:` entries of `/robots.txt` plus `/sitemap.xml`, following one level of sitemap index; the first 20 page URLs
+3. common paths on the origin that answered: `/login`, `/signin`, `/home`, `/index.html`, `/about`, `/contact`
+
+Only pages on the registrable domain of the requested or the resolved URL are used. Each page gets one
+navigation; error-page links and sitemap pages are tried at most 3 times each and discovery stops after
+8 navigations. Discovery requests read at most 512 KB per response and at most 5 s each (20 s overall),
+never past `scanTimeoutMs`. The first page that loads (2xx/304) becomes the landing page and the crawl
+continues as usual from its links. Gzipped sitemaps are not read.
+
+## Partial results
+
+A scan reports `status: 'success'` whenever at least one page loaded with 2xx/304, even if other pages
+failed. Events recorded on error or bot-wall pages never turn a scan without a loaded page into a success.
+`partial: true` marks a result that covers less than was asked for: a sampled page failed, fallback
+discovery was needed, or the scan deadline was reached. A site whose pages run no
+trackers, set no cookies and register no listeners is a normal `success` with `no_events: true` and
+empty reports. Cookies, the HAR and `inspection.json` are saved for every `success`, partial or not.
+
+A scan with no page loaded fails, whatever events were recorded:
+`{ status: 'failed', page_response: 'Initial page returned non-2xx status: <status>', entry_attempts, pages_succeeded: [], pages_failed }`.
 
 ## Inspection Result
 
@@ -150,7 +179,11 @@ When the site ends up on a different registrable domain, both the requested and 
     - `original_domain`: Registrable domain of `uri_ins`.
     - `final_domain`: Registrable domain of `uri_dest`.
     - `entry_redirected`: `true` when the crawl started on a different hostname than the one requested.
-    - `entry_attempts`: Browser navigations made to reach the first page, in order: `[{ url, outcome, status?, error? }]` where `outcome` is `success`, `http_status`, `error` or `deadline`. A `failed` result carries the same field next to `page_response` whenever at least one navigation was attempted; `page_response` keeps the form `Initial page returned non-2xx status: <last HTTP status>`.
+    - `entry_attempts`: Browser navigations made to reach the first page, in order: `[{ url, outcome, source, status?, error? }]` where `outcome` is `success`, `http_status`, `error` or `deadline` and `source` is `candidate` (entry URL resolution), `error_page_link`, `sitemap` or `common_path` (fallback page discovery). A `failed` result carries the same field next to `page_response` whenever at least one navigation was attempted; `page_response` keeps the form `Initial page returned non-2xx status: <last HTTP status of the entry candidates>`.
+    - `partial`: `true` when the scan covers fewer pages than requested because pages failed, fallback discovery was needed or the deadline was reached; otherwise `false`. Only present on `success` results.
+    - `pages_succeeded`: URLs of the pages that loaded, landing page first.
+    - `pages_failed`: Pages that could not be loaded, `[{ url, status?, error? }]`. Entry candidates are listed here only when none of them loaded. Also present on `failed` results.
+    - `no_events`: `true` when the inspected pages produced no inspector events; the reports are then empty.
 - **n.html**
   - Nth inspected page's html source.
 - **n.jpeg**
