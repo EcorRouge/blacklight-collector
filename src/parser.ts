@@ -21,10 +21,20 @@ import {
     hasOwnProperty, 
 } from './helpers/utils';
 
-export const generateReport = (reportType: string, eventData: BlacklightEvent[], dataDir: string, url: string) => {
+/**
+ * `url` is the first-party domain. `additionalFirstPartyDomains` covers sites that moved to a
+ * different registrable domain: both the requested and the final domain belong to the site.
+ */
+export const generateReport = (
+    reportType: string,
+    eventData: BlacklightEvent[],
+    dataDir: string,
+    url: string,
+    additionalFirstPartyDomains: readonly string[] = []
+) => {
     switch (reportType) {
         case 'cookies':
-            return reportCookieEvents(eventData, dataDir, url);
+            return reportCookieEvents(eventData, dataDir, url, additionalFirstPartyDomains);
         case 'key_logging':
             return reportKeyLogging(eventData);
         case 'behaviour_event_listeners':
@@ -40,7 +50,7 @@ export const generateReport = (reportType: string, eventData: BlacklightEvent[],
         case 'session_recorders':
             return reportSessionRecorders(eventData);
         case 'third_party_trackers':
-            return reportThirdPartyTrackers(eventData, url);
+            return reportThirdPartyTrackers(eventData, url, additionalFirstPartyDomains);
         default:
             return {};
     }
@@ -116,9 +126,9 @@ export const reportCanvasFontFingerprinters = (eventData: BlacklightEvent[]) => 
     return getCanvasFontFingerprinters(eventData);
 };
 
-export const reportCookieEvents = (eventData: BlacklightEvent[], dataDir, url) => {
+export const reportCookieEvents = (eventData: BlacklightEvent[], dataDir, url, additionalFirstPartyDomains: readonly string[] = []) => {
     const browser_cookies = loadBrowserCookies(dataDir);
-    return matchCookiesToEvents(browser_cookies, eventData, url);
+    return matchCookiesToEvents(browser_cookies, eventData, url, additionalFirstPartyDomains);
 };
 
 const reportKeyLogging = (eventData: BlacklightEvent[]) => {
@@ -173,10 +183,10 @@ const reportFingerprintableAPIs = (eventData: BlacklightEvent[]) => {
     return serializable;
 };
 
-const reportThirdPartyTrackers = (eventData: BlacklightEvent[], fpDomain) => {
+const reportThirdPartyTrackers = (eventData: BlacklightEvent[], fpDomain, additionalFirstPartyDomains: readonly string[] = []) => {
     return eventData.filter(e => {
         const requestDomain = getDomain(e.url);
-        const isThirdPartyDomain = requestDomain && requestDomain !== fpDomain;
+        const isThirdPartyDomain = requestDomain && requestDomain !== fpDomain && !additionalFirstPartyDomains.includes(requestDomain);
         return isThirdPartyDomain;
     });
 };

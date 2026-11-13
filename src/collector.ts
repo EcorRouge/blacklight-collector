@@ -21,6 +21,8 @@ import { clearDir, closeBrowser } from './helpers/utils';
 import { navigateWithinBudget, NavigationOptions } from './pptr-utils/navigate';
 import { runPageWork } from './pptr-utils/page-work';
 import { ScanDeadline } from './pptr-utils/scan-deadline';
+import { resolveEntryUrl } from './pptr-utils/resolve-entry-url';
+import { entryMetadata, lastHttpStatus, openEntryPage } from './pptr-utils/open-entry';
 
 export type CollectorOptions = Partial<typeof DEFAULT_OPTIONS> & {location?: string};
 
@@ -67,7 +69,9 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
     const deadline = new ScanDeadline(args.scanTimeoutMs);
     clearDir(args.outDir);
     const FIRST_PARTY = parse(inUrl);
-    let REDIRECTED_FIRST_PARTY = parse(inUrl);
+    // A site that moved to another registrable domain owns both; the final one is added on landing.
+    const firstPartyDomains: (string | null)[] = [FIRST_PARTY.domain];
+    const isFirstPartyDomain = (domain: string | null) => firstPartyDomains.includes(domain);
     const { logger, logFilePath } = getLogger({ outDir: args.outDir, quiet: args.quiet });
 
     const output: any = {
@@ -171,7 +175,7 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
         page.on('request', request => {
             const l = parse(request.url());
             // note that hosts may appear as first and third party depending on the path
-            if (FIRST_PARTY.domain === l.domain) {
+            if (isFirstPartyDomain(l.domain)) {
                 hosts.requests.first_party.add(l.hostname);
             } else {
                 if (request.url().indexOf('data://') < 1 && !!l.hostname) {
@@ -212,23 +216,30 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
             deadline
         };
 
-        // Go to the first url
-        console.log('Going to the first url', inUrl);
-        const firstPage = await navigateWithinBudget(page, inUrl, navigationOptions);
+        // Go to the first url, falling back to its redirect target and host/scheme variants
+        const entry = deadline.isExpired()
+            ? { candidates: [inUrl] }
+            : await resolveEntryUrl(inUrl, { deadline, userAgent: args.emulateDevice?.userAgent, extraChromiumArgs: args.extraChromiumArgs });
+        console.log('Going to the first url', inUrl, 'candidates:', entry.candidates);
+        const firstPage = await openEntryPage(page, entry.candidates, navigationOptions);
+        const attemptsField = firstPage.attempts.length > 0 ? { entry_attempts: firstPage.attempts } : {};
 
-        if (firstPage.kind !== 'success') {
-            if (firstPage.kind === 'deadline' || deadline.isExpired()) {
+        if (firstPage.response === null) {
+            if (firstPage.deadlineReached || deadline.isExpired()) {
                 return {
                     status: 'failed',
-                    page_response: 'Scan time budget exhausted'
+                    page_response: 'Scan time budget exhausted',
+                    ...attemptsField
                 };
             }
             return {
                 status: 'failed',
-                page_response: `Initial page returned non-2xx status: ${firstPage.response?.status()}`
+                page_response: `Initial page returned non-2xx status: ${lastHttpStatus(firstPage.attempts)}`,
+                ...attemptsField
             };
         }
         page_response = firstPage.response;
+        output.entry_attempts = firstPage.attempts;
         await savePageContent(pageIndex, args.outDir, page, args.saveScreenshots);
 
         // Save landing page title
@@ -252,34 +263,20 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
             });
 
         output.uri_dest = page.url();
+        Object.assign(output, entryMetadata(inUrl, output.uri_dest));
+        if (!isFirstPartyDomain(output.final_domain)) {
+            firstPartyDomains.push(output.final_domain);
+            console.log(`Site moved from ${FIRST_PARTY.domain} to ${output.final_domain}; treating both as first party.`);
+        }
         // If the landing page navigates away while we read it, keep crawling with what we have.
         await runPageWork(inUrl, async () => {
             duplicatedLinks = await getLinks(page);
         });
-        
-        // Don't update REDIRECTED_FIRST_PARTY if the redirect is to a completely different domain
-        const redirectedDomain = parse(output.uri_dest);
-        
-        // Check if it's the same root domain (allows subdomain variations)
-        const isSameDomain = FIRST_PARTY.domain === redirectedDomain.domain;
-        
-        console.log("Checking domain redirection:");
-        console.log(`Original domain: ${FIRST_PARTY.domain}`);
-        console.log(`Redirected domain: ${redirectedDomain.domain}`);
-        console.log(`Is same domain: ${isSameDomain}`);
-        
-        if (!isSameDomain) {
-            console.log(`Warning: Site redirected to different domain (${output.uri_dest}). Treating original domain (${inUrl}) as first party.`);
-            REDIRECTED_FIRST_PARTY = FIRST_PARTY;
-        } else {
-            // It's the same domain (possibly different subdomain), so update
-            REDIRECTED_FIRST_PARTY = redirectedDomain;
-        }
 
         for (const link of dedupLinks(duplicatedLinks)) {
             const l = parse(link.href);
 
-            if (REDIRECTED_FIRST_PARTY.domain === l.domain) {
+            if (isFirstPartyDomain(l.domain)) {
                 outputLinks.first_party.push(link);
                 hosts.links.first_party.add(l.hostname);
             } else {
@@ -372,7 +369,7 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
         for (const link of links) {
             const l = parse(link.href);
 
-            if (REDIRECTED_FIRST_PARTY.domain === l.domain) {
+            if (isFirstPartyDomain(l.domain)) {
                 outputLinks.first_party.push(link);
                 hosts.links.first_party.add(l.hostname);
             } else {
@@ -386,10 +383,11 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
         // generate report
         const fpRequests = Array.from(hosts.requests.first_party);
         const tpRequests = Array.from(hosts.requests.third_party);
-        const incorrectTpAssignment = tpRequests.filter((f: string) => getDomain(f) === REDIRECTED_FIRST_PARTY.domain);
+        // Hosts requested before the final domain was known were filed as third party.
+        const incorrectTpAssignment = tpRequests.filter((f: string) => isFirstPartyDomain(getDomain(f)));
         output.hosts = {
             requests: {
-                first_party: fpRequests.concat(incorrectTpAssignment),
+                first_party: Array.from(new Set(fpRequests.concat(incorrectTpAssignment))),
                 third_party: tpRequests.filter(t => !incorrectTpAssignment.includes(t))
             }
         };
@@ -420,10 +418,11 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
         }
 
         // We only consider something to be a third party tracker if:
-        // The domain is different to that of the final url (after any redirection) of the page the user requested to load.
+        // The domain is different to both the requested url's domain and the final url's (after any redirection).
         logHeap("Before generating reports");
+        const additionalFirstPartyDomains = firstPartyDomains.filter((d): d is string => d !== null && d !== FIRST_PARTY.domain);
         const reports = args.blTests.reduce((acc, cur) => {
-            acc[cur] = generateReport(cur, eventsByType[cur] || [], args.outDir, REDIRECTED_FIRST_PARTY.domain);
+            acc[cur] = generateReport(cur, eventsByType[cur] || [], args.outDir, FIRST_PARTY.domain, additionalFirstPartyDomains);
             return acc;
         }, {});
         logHeap("After generating reports");
