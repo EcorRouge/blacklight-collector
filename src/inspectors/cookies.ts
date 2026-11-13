@@ -126,7 +126,8 @@ export const getJsCookies = (events, url) => {
         });
 };
 
-export const matchCookiesToEvents = (cookies, events, url) => {
+export const matchCookiesToEvents = (cookies, events, url, additionalFirstPartyDomains: readonly string[] = []) => {
+    const isThirdParty = (cookieDomain: string | null) => getDomain(url) !== cookieDomain && !additionalFirstPartyDomains.includes(cookieDomain);
     const jsCookies = getJsCookies(events, url);
     const httpCookie = getHTTPCookies(events, url);
 
@@ -134,7 +135,7 @@ export const matchCookiesToEvents = (cookies, events, url) => {
         const js = jsCookies
             .map(jsCookie => ({
                 ...jsCookie,
-                third_party: getDomain(url) !== getDomain(`cookie://${jsCookie.domain}${jsCookie.path}`),
+                third_party: isThirdParty(getDomain(`cookie://${jsCookie.domain}${jsCookie.path}`)),
                 type: 'js'
             }))
             .filter(
@@ -146,7 +147,7 @@ export const matchCookiesToEvents = (cookies, events, url) => {
         const http = httpCookie
             .map(httpCookie => ({
                 ...httpCookie,
-                third_party: getDomain(url) !== getDomain(`cookie://${httpCookie.domain}${httpCookie.path}`),
+                third_party: isThirdParty(getDomain(`cookie://${httpCookie.domain}${httpCookie.path}`)),
                 type: 'http'
             }))
             .filter(
@@ -172,7 +173,7 @@ export const matchCookiesToEvents = (cookies, events, url) => {
             type = 'unknown';
         }
 
-        const third_party = getDomain(url) === getDomain(`cookie://${cookie.domain}${cookie.path}`) ? false : true;
+        const third_party = isThirdParty(getDomain(`cookie://${cookie.domain}${cookie.path}`));
         return { ...cookie, type, third_party };
     });
     return final.sort((a, b) => b.expires - a.expires);

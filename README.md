@@ -98,9 +98,29 @@ Results are stored in `demo-dir` by default
 - `extraChromiumArgs`
   - default: ['--disable-features=TrackingProtection3pcd']
   - Extra flags to pass to Chromium executable
+  - A `--proxy-server=http(s)://[user:pass@]host:port` flag is also used for the entry URL pre-resolution (below) when the `undici` package is installed; otherwise pre-resolution runs without the proxy and logs that it did. The proxy URL is never logged.
 - `location`
   - default: nonexistant
   - Optional description of location of scan execution
+
+## Entry URL resolution
+
+Before the browser starts crawling, the requested URL is resolved with a lightweight HTTP client
+(HEAD, falling back to GET; up to 10 redirects; one immediate `<meta http-equiv="refresh">` or
+one-line `location = '...'` hop in the first 4 KB of HTML; the emulated device's user agent;
+at most 8 s per request and 20 s in total, never past `scanTimeoutMs`). The browser then tries these
+candidates in order until one returns 2xx/304:
+
+1. the resolved final URL
+2. the requested URL
+3. the `www.` / apex twin of the final host (only `example.com` <-> `www.example.com`; deeper subdomains such as `api.example.com` are never rewritten or replaced by their parent domain)
+4. the `http://` version, only when https failed at the TLS or connection level
+5. the origin root `/` of any candidate that pointed to a deeper path
+
+The first candidate gets the usual `maxRetries`; fallbacks get one attempt each, and hosts the browser could not resolve are skipped.
+
+When the site ends up on a different registrable domain, both the requested and the final domain are treated as first party
+(request hosts, links and every report).
 
 ## Inspection Result
 
@@ -127,6 +147,10 @@ Results are stored in `demo-dir` by default
     - `uri_redirects`: The redirect chain.
     - `location`: If passed in as an argument, the description of the scan execution location.
     - `scan_deadline_reached`: Present and `true` when `scanTimeoutMs` ran out before every sampled page was visited.
+    - `original_domain`: Registrable domain of `uri_ins`.
+    - `final_domain`: Registrable domain of `uri_dest`.
+    - `entry_redirected`: `true` when the crawl started on a different hostname than the one requested.
+    - `entry_attempts`: Browser navigations made to reach the first page, in order: `[{ url, outcome, status?, error? }]` where `outcome` is `success`, `http_status`, `error` or `deadline`. A `failed` result carries the same field next to `page_response` whenever at least one navigation was attempted; `page_response` keeps the form `Initial page returned non-2xx status: <last HTTP status>`.
 - **n.html**
   - Nth inspected page's html source.
 - **n.jpeg**
