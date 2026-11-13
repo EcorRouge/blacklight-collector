@@ -78,8 +78,17 @@ Results are stored in `demo-dir` by default
 - `headers`
   - default: `{}` (expects `{ "[HTTP header]": "[value]", ... }`)
 - `defaultTimeout`
-  - default: 30000
-  - amount of time the page will wait to load
+  - default: 35000
+  - upper bound for a single page load; the effective cap is the smallest of `defaultTimeout`, `navigationTimeoutMs` and the time left in `scanTimeoutMs`
+- `navigationTimeoutMs`
+  - default: 45000
+  - cap for one navigation attempt. If loading with `defaultWaitUntil` times out, the pending load is stopped and the page is tried once more with `domcontentloaded`; the two loads never run at the same time
+- `scanTimeoutMs`
+  - default: 480000
+  - total wall-clock budget for the whole crawl, including retries. Once it is spent no further pages are visited; the pages already collected are still reported as a normal `success` result with `scan_deadline_reached: true`. If it runs out before the first page loads, `collect` returns `{ status: 'failed', page_response: 'Scan time budget exhausted' }`
+- `maxRetries`
+  - default: 3
+  - attempts per page for network errors and timeouts (never past `scanTimeoutMs`). HTTP errors follow a fixed policy: 400, 401, 404, 405, 410 and 451 are not retried; 403, 429, 5xx and other non-success statuses are retried once after 1 s. 2xx and 304 are success
 - `defaultWaitUntil`
   - default: 'networkidle2'
   - [Other options](https://pptr.dev/api/puppeteer.puppeteerlifecycleevent/)
@@ -117,6 +126,7 @@ Results are stored in `demo-dir` by default
     - `uri_dest`: The final url that was visited after any redirects.
     - `uri_redirects`: The redirect chain.
     - `location`: If passed in as an argument, the description of the scan execution location.
+    - `scan_deadline_reached`: Present and `true` when `scanTimeoutMs` ran out before every sampled page was visited.
 - **n.html**
   - Nth inspected page's html source.
 - **n.jpeg**

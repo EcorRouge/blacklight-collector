@@ -18,6 +18,9 @@ import { setupKeyLoggingInspector } from './inspectors/key-logging';
 import { setupSessionRecordingInspector } from './inspectors/session-recording';
 import { setUpThirdPartyTrackersInspector } from './inspectors/third-party-trackers';
 import { clearDir, closeBrowser } from './helpers/utils';
+import { navigateWithinBudget, NavigationOptions } from './pptr-utils/navigate';
+import { runPageWork } from './pptr-utils/page-work';
+import { ScanDeadline } from './pptr-utils/scan-deadline';
 
 export type CollectorOptions = Partial<typeof DEFAULT_OPTIONS> & {location?: string};
 
@@ -32,6 +35,13 @@ const DEFAULT_OPTIONS = {
     quiet: true,
     headless: true,
     defaultTimeout: 35000,
+    // Total wall-clock budget for the crawl. Callers usually wrap a scan in their own watchdog;
+    // stopping here first lets them still get the pages collected so far.
+    scanTimeoutMs: 480000,
+    // Cap for one navigation attempt, so a single slow page cannot eat the whole budget.
+    navigationTimeoutMs: 45000,
+    // Attempts per page for network and timeout errors; HTTP statuses use a stricter policy.
+    maxRetries: 3,
     numPages: 3,
     defaultWaitUntil: 'networkidle2' as PuppeteerLifeCycleEvent,
     saveBrowserProfile: false,
@@ -54,6 +64,7 @@ const DEFAULT_OPTIONS = {
 
 export const collect = async (inUrl: string, args: CollectorOptions) => {
     args = { ...DEFAULT_OPTIONS, ...args };
+    const deadline = new ScanDeadline(args.scanTimeoutMs);
     clearDir(args.outDir);
     const FIRST_PARTY = parse(inUrl);
     let REDIRECTED_FIRST_PARTY = parse(inUrl);
@@ -76,6 +87,8 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
             saveBrowserProfile: args.saveBrowserProfile,
             numPages: args.numPages,
             defaultTimeout: args.defaultTimeout,
+            scanTimeoutMs: args.scanTimeoutMs,
+            navigationTimeoutMs: args.navigationTimeoutMs,
             defaultWaitUntil: args.defaultWaitUntil,
             headless: args.headless,
             headers: args.headers,
@@ -191,71 +204,33 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
             };
         }
 
-        // Function to navigate to a page with a timeout guard
-        const navigateWithTimeout = async (page: Page, url: string, timeout: number, waitUntil: PuppeteerLifeCycleEvent, maxRetries: number = 3) => {
-            let lastResponse = null;
-            
-            for (let attempt = 1; attempt <= maxRetries; attempt++) {
-                try {
-                    page_response = await Promise.race([
-                        page.goto(url, {
-                            timeout: timeout,
-                            waitUntil: waitUntil
-                        }),
-                        new Promise((_, reject) =>
-                            setTimeout(() => {
-                                console.log(`Navigation attempt ${attempt} timeout`);
-                                reject(new Error(`Navigation attempt ${attempt} timeout`));
-                            }, 10000)
-                        )
-                    ]);
-                } catch (error) {
-                    console.log(`Attempt ${attempt} failed, trying with domcontentloaded`);
-                    try {
-                        page_response = await page.goto(url, {
-                            timeout: timeout,
-                            waitUntil: 'domcontentloaded' as PuppeteerLifeCycleEvent
-                        });
-                    } catch (fallbackError) {
-                        console.log(`Attempt ${attempt} failed completely: ${fallbackError.message}`);
-                        if (attempt === maxRetries) {
-                            return false;
-                        }
-                        continue;
-                    }
-                }
-                
-                lastResponse = page_response;
-                const status = page_response?.status();
-                
-                // Check if the response status is 2xx (OK) or 304 (Not Modified)
-                if (page_response && ((status >= 200 && status < 300) || status === 304)) {
-                    await savePageContent(pageIndex, args.outDir, page, args.saveScreenshots);
-                    return true;
-                } else {
-                    console.log(`Attempt ${attempt} - HTTP status: ${status} for ${url}`);
-                    if (attempt < maxRetries) {
-                        console.log(`Retrying navigation to ${url} (attempt ${attempt + 1}/${maxRetries})`);
-                        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second before retry
-                    }
-                }
-            }
-            
-            console.log(`Skipping page ${url} after ${maxRetries} attempts - final HTTP status: ${lastResponse?.status()}`);
-            return false;
+        const navigationOptions: NavigationOptions = {
+            waitUntil: args.defaultWaitUntil as PuppeteerLifeCycleEvent,
+            navigationTimeoutMs: args.navigationTimeoutMs,
+            defaultTimeout: args.defaultTimeout,
+            maxRetries: args.maxRetries,
+            deadline
         };
 
         // Go to the first url
         console.log('Going to the first url', inUrl);
-        const firstPageSuccess = await navigateWithTimeout(page, inUrl, args.defaultTimeout, args.defaultWaitUntil as PuppeteerLifeCycleEvent);
-        
-        if (!firstPageSuccess) {
+        const firstPage = await navigateWithinBudget(page, inUrl, navigationOptions);
+
+        if (firstPage.kind !== 'success') {
+            if (firstPage.kind === 'deadline' || deadline.isExpired()) {
+                return {
+                    status: 'failed',
+                    page_response: 'Scan time budget exhausted'
+                };
+            }
             return {
                 status: 'failed',
-                page_response: `Initial page returned non-2xx status: ${page_response?.status()}`
+                page_response: `Initial page returned non-2xx status: ${firstPage.response?.status()}`
             };
         }
-        
+        page_response = firstPage.response;
+        await savePageContent(pageIndex, args.outDir, page, args.saveScreenshots);
+
         // Save landing page title
         const title = await page.title();
         output.page_title = title;
@@ -277,7 +252,10 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
             });
 
         output.uri_dest = page.url();
-        duplicatedLinks = await getLinks(page);
+        // If the landing page navigates away while we read it, keep crawling with what we have.
+        await runPageWork(inUrl, async () => {
+            duplicatedLinks = await getLinks(page);
+        });
         
         // Don't update REDIRECTED_FIRST_PARTY if the redirect is to a completely different domain
         const redirectedDomain = parse(output.uri_dest);
@@ -312,8 +290,10 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
             }
         }
 
-        await fillForms(page);
-        await autoScroll(page);
+        await runPageWork(inUrl, async () => {
+            await fillForms(page);
+            await autoScroll(page);
+        });
 
         let subDomainLinks = [];
         if (getSubdomain(output.uri_dest) !== 'www') {
@@ -331,6 +311,12 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
         let failedUrls = 0;
 
         for (const [idx, link] of output.browsing_history.slice(1).entries()) {
+            // Out of time: stop browsing but still produce a normal report from the pages we have.
+            if (deadline.isExpired()) {
+                console.log(`Scan time budget exhausted, skipping remaining ${output.browsing_history.length - 1 - idx} links`);
+                output.scan_deadline_reached = true;
+                break;
+            }
             logger.log('info', `[#${idx + 2}] browsing now to ${link}`, { type: 'Browser' });
             if (didBrowserDisconnect) {
                 return {
@@ -342,18 +328,27 @@ export const collect = async (inUrl: string, args: CollectorOptions) => {
                 await clearCookiesCache(page);
             }
             console.log(`[#${idx + 2}] Browsing now to ${link}`);
-            
-            const linkSuccess = await navigateWithTimeout(page, link, args.defaultTimeout, args.defaultWaitUntil as PuppeteerLifeCycleEvent);
 
-            if (linkSuccess) {
+            const linkOutcome = await navigateWithinBudget(page, link, navigationOptions);
+            if (linkOutcome.kind !== 'success') {
+                failedUrls++;
+                if (linkOutcome.kind === 'deadline') {
+                    console.log(`Scan time budget exhausted while loading ${link}`);
+                    output.scan_deadline_reached = true;
+                    break;
+                }
+                continue;
+            }
+
+            await savePageContent(pageIndex, args.outDir, page, args.saveScreenshots);
+            pageIndex++;
+            const harvested = await runPageWork(link, async () => {
                 await fillForms(page);
-
                 await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for 1 second
-
                 duplicatedLinks = duplicatedLinks.concat(await getLinks(page));
                 await autoScroll(page);
-
-                pageIndex++;
+            });
+            if (harvested) {
                 successUrls++;
             } else {
                 failedUrls++;
